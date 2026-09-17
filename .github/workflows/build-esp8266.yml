@@ -1,4 +1,4 @@
-name: Build ESP8266 Firmware
+name: Build GRAIN GUARD ESP8266
 
 on:
   push:
@@ -22,12 +22,26 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
+      - name: Prepare LittleFS web files
+        run: |
+          rm -rf data
+          mkdir -p data
+          cp index.html data/index.html
+          cp style.css data/style.css
+          cp script.js data/script.js
+          sed -i 's/NODEMCU_URL: ""/NODEMCU_URL: window.location.origin/' data/script.js
+
       - name: Build firmware
         run: pio run
 
-      - name: Upload firmware BIN
+      - name: Build LittleFS filesystem
+        run: pio run -t buildfs
+
+      - name: Upload firmware and LittleFS BINs
         uses: actions/upload-artifact@v4
         with:
-          name: GRAIN-GUARD-ESP8266
-          path: .pio/build/nodemcuv2/firmware.bin
+          name: GRAIN-GUARD-ESP8266-LOCAL
+          path: |
+            .pio/build/nodemcuv2/firmware.bin
+            .pio/build/nodemcuv2/littlefs.bin
           if-no-files-found: error
