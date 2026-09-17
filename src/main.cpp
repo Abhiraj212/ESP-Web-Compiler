@@ -12,8 +12,8 @@
 #include <LiquidCrystal_I2C.h>
 #include <DHT.h>
 
-const char* WIFI_SSID     = "YOUR_PHONE_HOTSPOT";
-const char* WIFI_PASSWORD = "YOUR_PASSWORD";
+const char* WIFI_SSID     = "HOME2";
+const char* WIFI_PASSWORD = "09876532";
 
 #define LCD_I2C_ADDRESS 0x27
 LiquidCrystal_I2C lcd(LCD_I2C_ADDRESS, 16, 2);
