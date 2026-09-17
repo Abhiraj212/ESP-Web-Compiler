@@ -3,7 +3,7 @@ name: Build ESP8266 Firmware
 on:
   push:
     branches:
-      - main
+      - master
   workflow_dispatch:
 
 jobs:
