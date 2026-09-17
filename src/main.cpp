@@ -13,7 +13,7 @@
 #include <DHT.h>
 
 const char* WIFI_SSID     = "HOME2";
-const char* WIFI_PASSWORD = "09876532";
+const char* WIFI_PASSWORD = "<CHANGE_THIS_PASSWORD>";
 
 #define LCD_I2C_ADDRESS 0x27
 LiquidCrystal_I2C lcd(LCD_I2C_ADDRESS, 16, 2);
@@ -46,6 +46,22 @@ unsigned long lastLcdSwitch = 0;
 const unsigned long LCD_SCREEN_INTERVAL = 3000;
 int lcdScreen = 0;
 const int LCD_SCREEN_COUNT = 3;
+
+// Forward declarations are required because this is PlatformIO/C++ (.cpp),
+// unlike an Arduino .ino sketch where the IDE generates them automatically.
+void connectWiFi();
+void readAllSensors();
+void readOneSensor(DHT &sensor, SensorReading &reading, const char* label);
+void updateLcd();
+String buildTempLine();
+String buildHumLine();
+String tempSlot(SensorReading &r);
+String humSlot(SensorReading &r);
+bool averageTemperature(float &outAvg);
+bool averageHumidity(float &outAvg);
+void handleGetSensors();
+String sensorJson(const char* key, SensorReading &r);
+void handleNotFound();
 
 void setup() {
   Serial.begin(115200);
