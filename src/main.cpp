@@ -1,299 +1,101 @@
 /*
-  GRAIN GUARD - NodeMCU ESP8266
-  Standalone local web dashboard + 3 x DHT11 + 16x2 I2C LCD
+  NEO-6M Wi-Fi GPS Dashboard
+  NodeMCU ESP8266 + NEO-6M
 
-  The NodeMCU creates its own Wi-Fi network:
-    SSID: abhigrainscanner
+  NEO-6M TX -> NodeMCU D5 (GPIO14)
+  NEO-6M GND -> NodeMCU GND
 
-  The dashboard is stored in LittleFS and served directly by the ESP8266.
-  Open http://192.168.4.1 after connecting your phone to the AP.
+  Wi-Fi AP:
+    SSID: NEO6M-GPS
+    Password: gps12345
+    Dashboard: http://192.168.4.1
+
+  Note: HDOP is dilution of precision, not a guaranteed error radius.
 */
 
+#include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-#include <LittleFS.h>
-#include <Wire.h>
-#include <LiquidCrystal_I2C.h>
-#include <DHT.h>
+#include <SoftwareSerial.h>
+#include <TinyGPS++.h>
 
-// Local access point. Open network makes the school demo easy to connect to.
-const char* AP_SSID = "abhigrainscanner";
+const char* AP_SSID = "NEO6M-GPS";
+const char* AP_PASSWORD = "gps12345";
 
-#define LCD_I2C_ADDRESS 0x27
-LiquidCrystal_I2C lcd(LCD_I2C_ADDRESS, 16, 2);
+static const uint8_t GPS_RX_PIN = D5; // ESP RX <- NEO-6M TX
+static const uint8_t GPS_TX_PIN = D6; // unused, kept for SoftwareSerial
+static const uint32_t GPS_BAUD = 9600;
 
-#define DHT_TYPE DHT11
-#define SENSOR1_PIN D5
-#define SENSOR2_PIN D6
-#define SENSOR3_PIN D7
-
-DHT dht1(SENSOR1_PIN, DHT_TYPE);
-DHT dht2(SENSOR2_PIN, DHT_TYPE);
-DHT dht3(SENSOR3_PIN, DHT_TYPE);
-
+SoftwareSerial gpsSerial(GPS_RX_PIN, GPS_TX_PIN);
+TinyGPSPlus gps;
 ESP8266WebServer server(80);
 
-struct SensorReading {
-  float temperature;
-  float humidity;
-  bool valid;
-};
-
-SensorReading readingS1 = { NAN, NAN, false };
-SensorReading readingS2 = { NAN, NAN, false };
-SensorReading readingS3 = { NAN, NAN, false };
-
-unsigned long lastSensorRead = 0;
-const unsigned long SENSOR_READ_INTERVAL = 3000;
-
-unsigned long lastLcdSwitch = 0;
-const unsigned long LCD_SCREEN_INTERVAL = 3000;
-int lcdScreen = 0;
-const int LCD_SCREEN_COUNT = 3;
-
-void readAllSensors();
-void readOneSensor(DHT &sensor, SensorReading &reading, const char* label);
-void updateLcd();
-String buildTempLine();
-String buildHumLine();
-String tempSlot(SensorReading &r);
-String humSlot(SensorReading &r);
-bool averageTemperature(float &outAvg);
-bool averageHumidity(float &outAvg);
-void handleGetSensors();
-String sensorJson(const char* key, SensorReading &r);
-void handleRoot();
-void handleStatic();
-void handleNotFound();
-
-bool sendFile(const String& path, const String& contentType) {
-  if (!LittleFS.exists(path)) return false;
-  File file = LittleFS.open(path, "r");
-  if (!file) return false;
-  server.streamFile(file, contentType);
-  file.close();
-  return true;
+const char PAGE[] PROGMEM = R"HTML(
+<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NEO-6M GPS</title><style>
+body{margin:0;background:#0b1020;color:#eef2ff;font-family:system-ui,sans-serif}main{max-width:720px;margin:auto;padding:24px}
+h1{font-size:28px}.sub{color:#9aa6c5}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+.card{background:#151c31;border:1px solid #27314e;border-radius:18px;padding:18px}.v{font-size:26px;font-weight:700;margin-top:7px}
+.good{color:#72e6a1}.bad{color:#ff8a8a}a{color:#8ab4ff}small{color:#9aa6c5}@media(max-width:520px){.grid{grid-template-columns:1fr}}
+</style></head><body><main><h1>🛰️ NEO-6M GPS</h1><p class="sub">Live data from NodeMCU ESP8266</p>
+<div class="grid">
+<div class="card">GPS Fix<div class="v" id="fix">...</div></div>
+<div class="card">Satellites<div class="v" id="sat">--</div></div>
+<div class="card">Latitude<div class="v" id="lat">--</div></div>
+<div class="card">Longitude<div class="v" id="lng">--</div></div>
+<div class="card">HDOP<div class="v" id="hdop">--</div><small>Lower is generally better; not metres.</small></div>
+<div class="card">Altitude<div class="v" id="alt">--</div></div>
+<div class="card">Speed<div class="v" id="spd">--</div></div>
+<div class="card">GPS data age<div class="v" id="age">--</div></div>
+</div><p id="map"></p>
+<script>
+async function update(){
+ try{
+  const r=await fetch('/api/gps',{cache:'no-store'}),d=await r.json();
+  const f=document.getElementById('fix'); f.textContent=d.fix?'FIXED':'NO FIX'; f.className='v '+(d.fix?'good':'bad');
+  sat.textContent=d.satellites??'--'; lat.textContent=d.latitude??'--'; lng.textContent=d.longitude??'--';
+  hdop.textContent=d.hdop??'--'; alt.textContent=d.altitude_m==null?'--':d.altitude_m+' m';
+  spd.textContent=d.speed_kmph==null?'--':d.speed_kmph+' km/h'; age.textContent=d.age_ms==null?'--':d.age_ms+' ms';
+  map.innerHTML=d.fix?'<a target="_blank" href="https://www.google.com/maps?q='+d.latitude+','+d.longitude+'">Open coordinates in Maps ↗</a>':'Waiting for satellite fix...';
+ }catch(e){document.getElementById('fix').textContent='OFFLINE'}
 }
+update();setInterval(update,1000);
+</script></main></body></html>
+)HTML";
 
-String contentTypeFor(const String& path) {
-  if (path.endsWith(".html")) return "text/html";
-  if (path.endsWith(".css")) return "text/css";
-  if (path.endsWith(".js")) return "application/javascript";
-  if (path.endsWith(".json")) return "application/json";
-  if (path.endsWith(".svg")) return "image/svg+xml";
-  if (path.endsWith(".png")) return "image/png";
-  if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
-  if (path.endsWith(".ico")) return "image/x-icon";
-  if (path.endsWith(".woff2")) return "font/woff2";
-  return "application/octet-stream";
+void sendGpsJson() {
+  const bool fix = gps.location.isValid() && gps.location.age() < 5000;
+  String j = "{";
+  j += "\"fix\":" + String(fix ? "true" : "false");
+  j += ",\"satellites\":" + String(gps.satellites.isValid() ? String(gps.satellites.value()) : "null");
+  j += ",\"latitude\":" + String(fix ? String(gps.location.lat(), 6) : "null");
+  j += ",\"longitude\":" + String(fix ? String(gps.location.lng(), 6) : "null");
+  j += ",\"hdop\":" + String(gps.hdop.isValid() ? String(gps.hdop.hdop(), 2) : "null");
+  j += ",\"altitude_m\":" + String(gps.altitude.isValid() ? String(gps.altitude.meters(), 1) : "null");
+  j += ",\"speed_kmph\":" + String(gps.speed.isValid() ? String(gps.speed.kmph(), 1) : "null");
+  j += ",\"age_ms\":" + String(gps.location.isValid() ? String(gps.location.age()) : "null");
+  j += "}";
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", j);
 }
 
 void setup() {
   Serial.begin(115200);
-  delay(200);
-  Serial.println();
-  Serial.println("=== GRAIN GUARD - LOCAL MODE ===");
-
-  Wire.begin(D2, D1);
-  lcd.init();
-  lcd.backlight();
-  lcd.setCursor(0, 0);
-  lcd.print("GRAIN GUARD");
-  lcd.setCursor(0, 1);
-  lcd.print("Starting AP...");
-
-  dht1.begin();
-  dht2.begin();
-  dht3.begin();
-
-  if (!LittleFS.begin()) {
-    Serial.println("LittleFS mount FAILED");
-    lcd.clear();
-    lcd.print("LittleFS ERROR");
-  } else {
-    Serial.println("LittleFS mounted");
-  }
-
+  gpsSerial.begin(GPS_BAUD);
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(AP_SSID);
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
 
-  Serial.print("AP SSID: ");
-  Serial.println(AP_SSID);
-  Serial.print("Dashboard: http://");
-  Serial.println(WiFi.softAPIP());
-
-  server.on("/", HTTP_GET, handleRoot);
-  server.on("/api/sensors", HTTP_GET, handleGetSensors);
-  server.onNotFound(handleStatic);
+  server.on("/", [](){ server.send_P(200, "text/html", PAGE); });
+  server.on("/api/gps", HTTP_GET, sendGpsJson);
   server.begin();
-  Serial.println("HTTP server started on port 80");
 
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("WiFi: ");
-  lcd.print("abhigrainscan");
-  lcd.setCursor(0, 1);
-  lcd.print("192.168.4.1");
-  lastLcdSwitch = millis();
+  Serial.println();
+  Serial.println("NEO-6M GPS dashboard ready");
+  Serial.print("Wi-Fi: "); Serial.println(AP_SSID);
+  Serial.print("Open: http://"); Serial.println(WiFi.softAPIP());
 }
 
 void loop() {
+  while (gpsSerial.available()) gps.encode(gpsSerial.read());
   server.handleClient();
-
-  unsigned long now = millis();
-
-  if (now - lastSensorRead >= SENSOR_READ_INTERVAL) {
-    lastSensorRead = now;
-    readAllSensors();
-  }
-
-  if (now - lastLcdSwitch >= LCD_SCREEN_INTERVAL) {
-    lastLcdSwitch = now;
-    lcdScreen = (lcdScreen + 1) % LCD_SCREEN_COUNT;
-    updateLcd();
-  }
-}
-
-void handleRoot() {
-  if (!sendFile("/index.html", "text/html")) {
-    server.send(500, "text/plain", "LittleFS: index.html missing. Upload the filesystem image.");
-  }
-}
-
-void handleStatic() {
-  String path = server.uri();
-  if (path == "/") {
-    handleRoot();
-    return;
-  }
-  if (sendFile(path, contentTypeFor(path))) return;
-  server.send(404, "text/plain", "Not found");
-}
-
-void readAllSensors() {
-  readOneSensor(dht1, readingS1, "Sensor 1 (Front)");
-  readOneSensor(dht2, readingS2, "Sensor 2 (Middle)");
-  readOneSensor(dht3, readingS3, "Sensor 3 (Rear)");
-}
-
-void readOneSensor(DHT &sensor, SensorReading &reading, const char* label) {
-  float h = sensor.readHumidity();
-  float t = sensor.readTemperature();
-
-  if (isnan(h) || isnan(t)) {
-    reading.valid = false;
-    reading.temperature = NAN;
-    reading.humidity = NAN;
-    Serial.print(label);
-    Serial.println(": READ ERROR (check wiring)");
-  } else {
-    reading.valid = true;
-    reading.temperature = t;
-    reading.humidity = h;
-    Serial.print(label);
-    Serial.print(": ");
-    Serial.print(t, 1);
-    Serial.print(" C, ");
-    Serial.print(h, 1);
-    Serial.println(" %RH");
-  }
-}
-
-void updateLcd() {
-  lcd.clear();
-  switch (lcdScreen) {
-    case 0:
-      lcd.setCursor(0, 0);
-      lcd.print("GRAIN GUARD");
-      lcd.setCursor(0, 1);
-      lcd.print("AP Online");
-      break;
-
-    case 1: {
-      lcd.setCursor(0, 0);
-      lcd.print(buildTempLine());
-      lcd.setCursor(0, 1);
-      float avgT;
-      if (averageTemperature(avgT)) {
-        lcd.print("AVG T:");
-        lcd.print(avgT, 1);
-        lcd.print("C");
-      } else {
-        lcd.print("AVG T:--");
-      }
-      break;
-    }
-
-    case 2: {
-      lcd.setCursor(0, 0);
-      lcd.print(buildHumLine());
-      lcd.setCursor(0, 1);
-      float avgH;
-      if (averageHumidity(avgH)) {
-        lcd.print("AVG H:");
-        lcd.print(avgH, 1);
-        lcd.print("%");
-      } else {
-        lcd.print("AVG H:--");
-      }
-      break;
-    }
-  }
-}
-
-String buildTempLine() {
-  return "1:" + tempSlot(readingS1) + " 2:" + tempSlot(readingS2) + " 3:" + tempSlot(readingS3) + "C";
-}
-
-String buildHumLine() {
-  return "1:" + humSlot(readingS1) + " 2:" + humSlot(readingS2) + " 3:" + humSlot(readingS3) + "%";
-}
-
-String tempSlot(SensorReading &r) {
-  if (!r.valid) return "ERR";
-  return String((int)round(r.temperature));
-}
-
-String humSlot(SensorReading &r) {
-  if (!r.valid) return "ERR";
-  return String((int)round(r.humidity));
-}
-
-bool averageTemperature(float &outAvg) {
-  if (!readingS1.valid || !readingS2.valid || !readingS3.valid) return false;
-  outAvg = (readingS1.temperature + readingS2.temperature + readingS3.temperature) / 3.0;
-  return true;
-}
-
-bool averageHumidity(float &outAvg) {
-  if (!readingS1.valid || !readingS2.valid || !readingS3.valid) return false;
-  outAvg = (readingS1.humidity + readingS2.humidity + readingS3.humidity) / 3.0;
-  return true;
-}
-
-void handleGetSensors() {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
-  server.sendHeader("Cache-Control", "no-store");
-
-  String json = "{";
-  json += sensorJson("sensor1", readingS1) + ",";
-  json += sensorJson("sensor2", readingS2) + ",";
-  json += sensorJson("sensor3", readingS3);
-  json += "}";
-
-  server.send(200, "application/json", json);
-}
-
-String sensorJson(const char* key, SensorReading &r) {
-  String out = "\"";
-  out += key;
-  out += "\":{";
-  if (r.valid) {
-    out += "\"temperature\":" + String(r.temperature, 1) + ",";
-    out += "\"humidity\":" + String(r.humidity, 1);
-  } else {
-    out += "\"temperature\":null,\"humidity\":null";
-  }
-  out += "}";
-  return out;
 }
