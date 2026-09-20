@@ -1,17 +1,15 @@
-name: Build GRAIN GUARD ESP8266
+name: Build NEO-6M GPS ESP8266
 
 on:
   push:
-    branches:
-      - master
+    branches: [master]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -22,26 +20,18 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
-      - name: Prepare LittleFS web files
-        run: |
-          rm -rf data
-          mkdir -p data
-          cp index.html data/index.html
-          cp style.css data/style.css
-          cp script.js data/script.js
-          sed -i 's/NODEMCU_URL: ""/NODEMCU_URL: window.location.origin/' data/script.js
-
-      - name: Build firmware
+      - name: Compile ESP8266 firmware
         run: pio run
 
-      - name: Build LittleFS filesystem
-        run: pio run -t buildfs
+      - name: Collect flash files
+        run: |
+          mkdir -p output
+          cp .pio/build/nodemcuv2/firmware.bin output/firmware.bin
+          cp .pio/build/nodemcuv2/firmware.elf output/firmware.elf
 
-      - name: Upload firmware and LittleFS BINs
+      - name: Upload compiled firmware
         uses: actions/upload-artifact@v4
         with:
-          name: GRAIN-GUARD-ESP8266-LOCAL
-          path: |
-            .pio/build/nodemcuv2/firmware.bin
-            .pio/build/nodemcuv2/littlefs.bin
+          name: NEO6M-NodeMCU-Firmware
+          path: output/
           if-no-files-found: error
